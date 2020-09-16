@@ -1,14 +1,18 @@
 package com.ilegra.desafio.services;
 
-import java.io.File;
-import java.io.FileOutputStream;
 import java.io.IOException;
-import java.util.LinkedList;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.Queue;
+import java.util.stream.Stream;
 
+import com.ilegra.desafio.repositories.ClientRepository;
+import com.ilegra.desafio.repositories.FilesRepository;
+import com.ilegra.desafio.repositories.ItemRepository;
+import com.ilegra.desafio.repositories.SaleRepository;
+import com.ilegra.desafio.repositories.SalesmanRepository;
 import com.ilegra.desafio.startup.AppStartup;
-import org.apache.commons.io.FileUtils;
-import org.apache.commons.io.LineIterator;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -18,67 +22,64 @@ public class FileProcessService {
 
     private static final Logger log = LoggerFactory.getLogger(FileProcessService.class);
 
-    public static boolean processando = false;
-    public static final Queue<String> filesToProcess = new LinkedList<>();
-    public static final Queue<String> processedFiles = new LinkedList<>();
-    public static final Queue<String> failedFiles = new LinkedList<>();
+    private final LineProcessorService lineProcessorService;
+    private final ReportService reportService;
+
+    public FileProcessService(LineProcessorService lineProcessorService, ReportService reportService) {
+        this.lineProcessorService = lineProcessorService;
+        this.reportService = reportService;
+    }
 
     public void processFileList() {
-        if (filesToProcess.isEmpty()) {
-            processando = false;
-            return;
-        }
+        this.processFiles(FilesRepository.filesToProcess);
+    }
 
-        processando = true;
-        String fileName = filesToProcess.peek();
+    public void processTryAgainFiles() {
+        this.processFiles(FilesRepository.tryAgain);
+    }
 
-        try {
-            this.readFile(fileName);
-            processedFiles.add(fileName);
-        } catch (Exception e) {
-            log.error("Erro ao processar arquivo: {}", fileName, e);
-            failedFiles.add(fileName);
-        }
+    private void processFiles(Queue<String> queue) {
+        if (queue.isEmpty()) return;
 
-        filesToProcess.poll();
+        String fileName = queue.peek();
+        this.readFile(fileName);
+        queue.poll();
+
+        this.resetRepositories();
         this.processFileList();
     }
 
     private void readFile(String fileName) {
-        String filePath = AppStartup.INPUT + fileName;
-        File file = new File(filePath);
+        Path path = Paths.get(AppStartup.INPUT, fileName);
 
-        if (file.exists() && file.canRead()) {
-            log.info("PROCESSANDO O ARQUIVO: {}", fileName);
-            try (LineIterator lineIterator = FileUtils.lineIterator(file, "UTF-8")) {
-
-                while (lineIterator.hasNext()) {
-                    String line = lineIterator.nextLine();
-                    System.out.println(line);
-                }
-                this.exportDataInFile();
-            } catch (Exception e) {
-                log.error("Erro ao ler arquivo", e);
-            }
-        } else {
-            log.info("Arquivo não existe ou não pode ser lido");
-        }
-    }
-
-    private void exportDataInFile() {
-        if (AppStartup.OUTPUT == null || AppStartup.OUTPUT.isEmpty()) {
-            log.error("Path de output do relatorio não pode ser nulo ou vazio");
+        if (!Files.isReadable(path)) {
+            this.insertOnTyAgainQueue(fileName);
             return;
         }
 
-        String filePath = AppStartup.OUTPUT + "relatorio.txt";
-        File file = new File(filePath);
+        try (Stream<String> lines = Files.lines(path)) {
+            lines.forEach(lineProcessorService::lineProcessor);
+            reportService.generateReport(fileName);
 
-        try (FileOutputStream fileOutputStream = new FileOutputStream(file)) {
-            fileOutputStream.write("Teste".getBytes());
         } catch (IOException e) {
-            log.error("Erro ao gerar relatório", e);
+            log.error("Error on read file {}", fileName, e);
+            FilesRepository.failedFiles.add(fileName);
         }
-
     }
+
+    private void insertOnTyAgainQueue(String fileName) {
+        if (!FilesRepository.tryAgain.contains(fileName)) {
+            FilesRepository.tryAgain.add(fileName);
+            log.info("INSERT ON TRY AGAIN: {}", fileName);
+        }
+    }
+
+    private void resetRepositories() {
+        ClientRepository.clear();
+        ItemRepository.clear();
+        SaleRepository.clear();
+        SalesmanRepository.clear();
+    }
+
+
 }
